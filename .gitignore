@@ -1,0 +1,8 @@
+#VsCode Stuff
+.vscode/
+
+# Latex build files
+*.aux
+*.log
+*.out
+*.synctex.gz
