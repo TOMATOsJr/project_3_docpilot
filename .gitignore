@@ -6,3 +6,12 @@
 *.log
 *.out
 *.synctex.gz
+
+# Node modules
+node_modules/
+
+# cpython files
+__pycache__/
+
+# .env files
+.env*

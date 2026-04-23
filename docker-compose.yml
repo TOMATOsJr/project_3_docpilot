@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: docpilot-postgres
+    environment:
+      POSTGRES_DB: docpilot
+      POSTGRES_USER: docpilot
+      POSTGRES_PASSWORD: docpilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - docpilot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docpilot -d docpilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  docpilot_pgdata:
