@@ -14,16 +14,14 @@
 |:---|---:|---:|---:|
 | **Mean** | 0.0026 | 2.0605 | **+2.0579** |
 | **Median** | 0.0025 | 2.0134 | **+2.0109** |
-| **P95** | 0.0027 | 2.8221 | **+2.8194** |
-| **P99** | 0.0049 | 3.1400 | **+3.1351** |
 | **Std Dev** | 0.0005 | 0.4122 | — |
 | **Min** | 0.0024 | 1.4034 | — |
 | **Max** | 0.0065 | 4.1317 | — |
 
-**Finding:** The HTTP boundary adds a **mean overhead of 2.06 ms** per inter-service call. The monolith call is **792x faster** in mean latency. The microservice P99 reaches 3.14 ms — already 640x slower than the monolith P99 of 0.0049 ms.
+**Finding:** The HTTP boundary adds a **mean overhead of 2.06 ms** per inter-service call. In this benchmark, the in-process call exhibits **~792× lower latency** than an HTTP-based call due to the absence of network serialization and transport overhead. The microservice P99 reaches 3.14 ms — compared to 0.0049 ms for the in-process call.
 
 > [!NOTE]
-> The 2 ms overhead shown here represents **one** service boundary. A real microservices RAG pipeline crosses 3+ boundaries (API Gateway → Query Svc → Search Svc → DB Svc), multiplying this penalty to **6–10 ms** of pure architectural overhead per request — before LLM generation even begins.
+> The 2 ms overhead shown here represents **one** service boundary. In multi-hop microservice pipelines (e.g., API Gateway → Query Svc → Search Svc → DB Svc), this overhead can accumulate to an **estimated 6–10 ms** of pure architectural overhead per request — before LLM generation even begins.
 
 ---
 
@@ -35,10 +33,10 @@
 | **HTTP / Microservice** | **5.49 RPS** |
 | **Gain Factor** | **1,327x** |
 
-**Finding:** Under 10 concurrent workers, the monolith achieves **7,285 RPS** vs only **5.49 RPS** for the HTTP path. This is because each HTTP worker must open a TCP connection, wait for socket accept, send the request, and parse the JSON response — all blocking the thread during that time. The in-process call returns instantly, freeing the thread for the next call.
+**Finding:** Under 10 concurrent workers, the monolith achieves **7,285 RPS** vs only **5.49 RPS** for the HTTP path. The observed throughput difference is influenced by HTTP overhead, connection handling, and the limitations of the local benchmarking setup (single-node execution, no connection pooling, no horizontal scaling). In a distributed deployment, microservices can scale horizontally, mitigating this gap.
 
 > [!IMPORTANT]
-> The raw throughput gap (1327x) is an upper bound specific to this operation (in-memory list). In production, DB queries equalize the throughput somewhat. However, the monolith advantage remains significant for any operation that requires 2+ service boundaries in a microservices topology.
+> The raw throughput gap (1327x) is an upper bound specific to this local, single-node setup. It should not be interpreted as a universal property of either architecture. In production, DB I/O equalises the gap considerably, and microservices gain back throughput through independent horizontal scaling.
 
 ---
 
@@ -62,8 +60,6 @@
 
 ### Conclusion
 
-The benchmark confirms that for DocPilot's current scale, the **Modular Monolith eliminates ~2 ms of latency overhead and achieves 1,327x higher throughput** compared to an HTTP microservices boundary — all without giving up the ability to migrate later. The architecture is structured with clean `api / services / infrastructure` layers that can be physically split into services when the need arises.
+The benchmark demonstrates that a modular monolith eliminates approximately **2 ms of latency per service boundary** compared to HTTP-based microservices in a single-node setup. While the monolith shows significantly higher throughput in this configuration, this advantage is partly due to the absence of network overhead and the limitations of the local benchmarking environment. Microservices, however, enable **horizontal scaling and independent service deployment**, which can offset these costs at larger scales. For DocPilot's current workload, the modular monolith provides superior latency and simplicity, while preserving a clear path to future decomposition via its clean `api / services / infrastructure` layering.
 
 ---
-
-*Generated from: `benchmark_results.json` | Script: `scratch_benchmark.py`*
