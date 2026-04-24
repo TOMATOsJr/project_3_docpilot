@@ -1,0 +1,45 @@
+{
+  "benchmark_timestamp": "2026-04-24T23:35:00",
+  "config": {
+    "iterations": 100,
+    "concurrency": 10,
+    "machine": "Windows (local), Python 3.12, FastAPI + uvicorn loopback"
+  },
+  "monolith": {
+    "label": "Modular Monolith (In-Process)",
+    "n": 100,
+    "mean_ms": 0.0026,
+    "median_ms": 0.0025,
+    "stdev_ms": 0.0005,
+    "min_ms": 0.0024,
+    "max_ms": 0.0065,
+    "p95_ms": 0.0027,
+    "p99_ms": 0.0049
+  },
+  "http_microservice": {
+    "label": "Microservice (HTTP Loopback)",
+    "n": 100,
+    "mean_ms": 2.0605,
+    "median_ms": 2.0134,
+    "stdev_ms": 0.4122,
+    "min_ms": 1.4034,
+    "max_ms": 4.1317,
+    "p95_ms": 2.8221,
+    "p99_ms": 3.1400
+  },
+  "throughput": {
+    "monolith_rps": 7285.87,
+    "http_rps": 5.49,
+    "total_calls": 50,
+    "concurrency": 10
+  },
+  "summary": {
+    "http_overhead_mean_ms": 2.0579,
+    "http_overhead_p95_ms": 2.8194,
+    "http_overhead_p99_ms": 3.1351,
+    "speedup_factor": 792.5,
+    "monolith_throughput_rps": 7285.87,
+    "http_throughput_rps": 5.49,
+    "throughput_gain_factor": 1327.1
+  }
+}
