@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import PlainTextResponse, Response
 
 from app.api.deps import get_repository, get_ingest_service
 from app.core.models import UploadResponse
@@ -66,3 +67,37 @@ def delete_document(
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(error)}") from error
+
+
+@router.get("/{document_id}/content")
+def get_document_content(
+    document_id: UUID,
+    repository: PostgresRepository = Depends(get_repository),
+) -> dict:
+    """Return full stored text for a document for editor view."""
+    result = repository.get_document_text(document_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    metadata, raw_text = result
+    return {
+        "document_id": str(metadata.id),
+        "filename": metadata.filename,
+        "document_type": metadata.document_type,
+        "content": raw_text,
+    }
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: UUID,
+    repository: PostgresRepository = Depends(get_repository),
+) -> Response:
+    """Download the latest stored text representation for the document."""
+    result = repository.get_document_text(document_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    metadata, raw_text = result
+    headers = {"Content-Disposition": f'attachment; filename="{metadata.filename}"'}
+    return PlainTextResponse(content=raw_text, headers=headers)

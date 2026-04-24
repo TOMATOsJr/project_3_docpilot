@@ -1,75 +1,81 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-type HealthResponse = {
-  status: string;
-  service: string;
-  version: string;
-  environment: string;
-  timestamp: string;
-};
-
 type DocumentRecord = {
   document: {
     id: string;
     filename: string;
     document_type: string;
-    page_count: number;
     uploaded_at: string;
   };
   chunk_count: number;
 };
 
-type UploadState = 'idle' | 'uploading' | 'ready' | 'error';
-
-type Notice = {
-  kind: 'success' | 'error' | 'info';
-  message: string;
-};
-
-type Citation = {
-  document_id: string;
-  page_number: number | null;
-  paragraph_index: number | null;
-  source_label: string | null;
-  quote: string | null;
-};
-
 type QueryResponse = {
   answer: string;
-  citations: Citation[];
-  retrieved_chunks: Array<{ id: string; text: string }>;
+  citations: Array<{
+    document_id: string;
+    source_label: string | null;
+    quote: string | null;
+  }>;
   model_used: string;
-  requested_model: string | null;
+  model_selection_reason: string | null;
   fallback_used: boolean;
 };
 
-type QaTurn = {
-  id: string;
-  query: string;
-  response: QueryResponse;
+type DiffLine = {
+  kind: 'insert' | 'delete' | 'equal';
+  content: string;
 };
 
-function formatDocumentType(documentType: string): string {
-  return documentType === 'unknown' ? 'ready' : documentType;
-}
+type EditResponse = {
+  proposal: {
+    command_id: string;
+    document_id: string;
+    diff: DiffLine[];
+  };
+  model_used: string | null;
+  model_selection_reason: string | null;
+  fallback_used: boolean;
+  status: 'pending' | 'applied' | 'rejected';
+};
+
+type ChatMode = 'qa' | 'edit';
+type UploadState = 'idle' | 'uploading' | 'error';
+
+type ChatTurn = {
+  id: string;
+  role: 'user' | 'assistant';
+  mode: ChatMode;
+  message: string;
+};
+
+type FileContentResponse = {
+  document_id: string;
+  filename: string;
+  document_type: string;
+  content: string;
+};
 
 export default function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [uploadState, setUploadState] = useState<UploadState>('idle');
-  const [notice, setNotice] = useState<Notice | null>(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [query, setQuery] = useState('');
-  const [maxChunks, setMaxChunks] = useState(3);
-  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
-  const [qaHistory, setQaHistory] = useState<QaTurn[]>([]);
-  const [isAsking, setIsAsking] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>('');
-
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [activeDocumentId, setActiveDocumentId] = useState<string>('');
+  const [activeFilename, setActiveFilename] = useState<string>('');
+  const [activeDocumentType, setActiveDocumentType] = useState<string>('');
+  const [activeContent, setActiveContent] = useState<string>('');
+  const [uploadState, setUploadState] = useState<UploadState>('idle');
+  const [notice, setNotice] = useState<string>('');
+
+  const [mode, setMode] = useState<ChatMode>('qa');
+  const [chatInput, setChatInput] = useState('');
+  const [chatTurns, setChatTurns] = useState<ChatTurn[]>([]);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('auto');
+  const [useActiveOnlyForQa, setUseActiveOnlyForQa] = useState(true);
+
+  const [pendingEdit, setPendingEdit] = useState<EditResponse | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const sortedDocuments = useMemo(
     () =>
@@ -81,25 +87,50 @@ export default function App() {
     [documents],
   );
 
-  const documentNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const doc of documents) {
-      map.set(doc.document.id, doc.document.filename);
+  const centerDiff = useMemo(() => {
+    if (!pendingEdit) {
+      return [] as DiffLine[];
     }
-    return map;
-  }, [documents]);
+    if (pendingEdit.proposal.document_id !== activeDocumentId) {
+      return [] as DiffLine[];
+    }
+    return pendingEdit.proposal.diff;
+  }, [pendingEdit, activeDocumentId]);
 
-  async function loadHealth() {
-    try {
-      const response = await fetch('/api/health');
-      if (!response.ok) {
-        throw new Error('Health check failed');
-      }
-      const data = (await response.json()) as HealthResponse;
-      setHealth(data);
-    } catch {
-      setHealth(null);
+  useEffect(() => {
+    void loadDocuments();
+    void loadAvailableModels();
+  }, []);
+
+  useEffect(() => {
+    if (!sortedDocuments.length) {
+      setActiveDocumentId('');
+      setActiveFilename('');
+      setActiveDocumentType('');
+      setActiveContent('');
+      return;
     }
+
+    if (!sortedDocuments.some((doc) => doc.document.id === activeDocumentId)) {
+      const first = sortedDocuments[0];
+      setActiveDocumentId(first.document.id);
+    }
+  }, [sortedDocuments, activeDocumentId]);
+
+  useEffect(() => {
+    if (!activeDocumentId) {
+      return;
+    }
+    void loadDocumentContent(activeDocumentId);
+  }, [activeDocumentId]);
+
+  async function loadDocuments() {
+    const response = await fetch('/api/documents');
+    if (!response.ok) {
+      throw new Error('Failed to load documents');
+    }
+    const payload = (await response.json()) as DocumentRecord[];
+    setDocuments(payload);
   }
 
   async function loadAvailableModels() {
@@ -108,454 +139,347 @@ export default function App() {
       if (!response.ok) {
         throw new Error('Failed to load models');
       }
-      const data = (await response.json()) as { available_models: string[] };
-      setAvailableModels(data.available_models);
-      // Set first model as default
-      if (data.available_models.length > 0 && !selectedModel) {
-        setSelectedModel(data.available_models[0]);
-      }
-    } catch (error) {
-      console.error('Could not load available models:', error);
+      const payload = (await response.json()) as { available_models: string[] };
+      setAvailableModels(payload.available_models);
+    } catch {
+      setAvailableModels([]);
     }
   }
 
-  async function loadDocuments() {
-    setRefreshing(true);
-    try {
-      const response = await fetch('/api/documents');
-      if (!response.ok) {
-        throw new Error('Failed to load documents');
-      }
-      const data = (await response.json()) as DocumentRecord[];
-      setDocuments(data);
-      setSelectedDocumentIds((current) => current.filter((id) => data.some((record) => record.document.id === id)));
-    } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Could not load documents.' });
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadHealth();
-    void loadDocuments();
-    void loadAvailableModels();
-  }, []);
-
-  async function uploadFile(file: File) {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const response = await fetch('/api/documents/upload', {
-      method: 'POST',
-      body: formData,
-    });
-
+  async function loadDocumentContent(documentId: string) {
+    const response = await fetch(`/api/documents/${documentId}/content`);
     if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(detail || `Upload failed for ${file.name}`);
+      setActiveContent('');
+      return;
     }
+
+    const payload = (await response.json()) as FileContentResponse;
+    setActiveFilename(payload.filename);
+    setActiveDocumentType(payload.document_type);
+    setActiveContent(payload.content || '');
   }
 
-  async function handleFiles(files: FileList | File[]) {
-    const validFiles = Array.from(files).filter((file) => file.size > 0);
-
-    if (validFiles.length === 0) {
-      setNotice({ kind: 'error', message: 'No files were selected.' });
+  async function handleFileUpload(files: FileList | null) {
+    if (!files || files.length === 0) {
       return;
     }
 
     setUploadState('uploading');
-    setNotice({ kind: 'info', message: `Uploading ${validFiles.length} file${validFiles.length > 1 ? 's' : ''}...` });
+    setNotice(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`);
 
     try {
-      for (const file of validFiles) {
-        await uploadFile(file);
+      for (const file of Array.from(files)) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/documents/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
       }
-      setUploadState('ready');
-      setNotice({ kind: 'success', message: `Uploaded ${validFiles.length} file${validFiles.length > 1 ? 's' : ''} successfully.` });
+      setUploadState('idle');
+      setNotice('Upload complete.');
       await loadDocuments();
-      await loadHealth();
     } catch (error) {
       setUploadState('error');
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Upload failed.' });
+      setNotice(error instanceof Error ? error.message : 'Upload failed.');
     }
   }
 
-  async function deleteDocument(documentId: string, filename: string) {
-    const confirmed = window.confirm(`Delete ${filename}?`);
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/documents/${documentId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok && response.status !== 204) {
-        const detail = await response.text();
-        throw new Error(detail || `Delete failed for ${filename}`);
-      }
-
-      setNotice({ kind: 'success', message: `${filename} removed.` });
-      await loadDocuments();
-      setQaHistory((history) =>
-        history.map((turn) => ({
-          ...turn,
-          response: {
-            ...turn.response,
-            citations: turn.response.citations.filter((citation) => citation.document_id !== documentId),
-          },
-        })),
-      );
-    } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Delete failed.' });
-    }
-  }
-
-  async function askQuestion(event: React.FormEvent<HTMLFormElement>) {
+  async function submitChat(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const trimmedQuery = query.trim();
-    if (trimmedQuery.length === 0) {
-      setNotice({ kind: 'error', message: 'Please enter a question.' });
+    const input = chatInput.trim();
+    if (!input) {
       return;
     }
 
-    if (documents.length === 0) {
-      setNotice({ kind: 'error', message: 'Upload at least one document before asking a question.' });
-      return;
-    }
+    const userTurn: ChatTurn = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      mode,
+      message: input,
+    };
+    setChatTurns((current) => [userTurn, ...current]);
+    setChatInput('');
+    setIsSubmitting(true);
 
-    setIsAsking(true);
     try {
-      // Map qaHistory to ConversationTurn format
-      const conversationHistory = qaHistory.map((turn) => ({
-        query: turn.query,
-        model_used: turn.response.model_used,
-        answer: turn.response.answer,
-      }));
-
-      const response = await fetch('/api/qa', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query: trimmedQuery,
-          document_ids: selectedDocumentIds,
-          max_chunks: maxChunks,
-          requested_model: selectedModel || null,
-          conversation_history: conversationHistory,
-        }),
-      });
-
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(detail || 'Failed to get answer.');
+      if (mode === 'qa') {
+        await submitQa(input);
+      } else {
+        await submitEdit(input);
       }
-
-      const payload = (await response.json()) as QueryResponse;
-      const turn: QaTurn = {
+    } catch (error) {
+      const errorTurn: ChatTurn = {
         id: crypto.randomUUID(),
-        query: trimmedQuery,
-        response: payload,
+        role: 'assistant',
+        mode,
+        message: error instanceof Error ? error.message : 'Request failed.',
       };
-      setQaHistory((history) => [turn, ...history]);
-      setQuery('');
-      setNotice({ kind: 'success', message: 'Grounded answer generated.' });
-    } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Q&A request failed.' });
+      setChatTurns((current) => [errorTurn, ...current]);
     } finally {
-      setIsAsking(false);
+      setIsSubmitting(false);
     }
   }
 
-  function toggleDocumentFilter(documentId: string) {
-    setSelectedDocumentIds((current) =>
-      current.includes(documentId) ? current.filter((id) => id !== documentId) : [...current, documentId],
-    );
+  async function submitQa(input: string) {
+    const documentIds = useActiveOnlyForQa && activeDocumentId ? [activeDocumentId] : [];
+
+    const response = await fetch('/api/qa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: input,
+        document_ids: documentIds,
+        requested_model: selectedModel === 'auto' ? null : selectedModel,
+        max_chunks: 5,
+        conversation_history: [],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const payload = (await response.json()) as QueryResponse;
+    const citationSummary = payload.citations
+      .slice(0, 2)
+      .map((c) => `${c.source_label || 'source'}: ${c.quote || 'no quote'}`)
+      .join(' | ');
+
+    const assistantTurn: ChatTurn = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      mode: 'qa',
+      message: `${payload.answer}\n\nModel: ${payload.model_used}${payload.fallback_used ? ' (fallback)' : ''}${payload.model_selection_reason ? `\nWhy: ${payload.model_selection_reason}` : ''}${citationSummary ? `\nCitations: ${citationSummary}` : ''}`,
+    };
+    setChatTurns((current) => [assistantTurn, ...current]);
   }
 
-  function openFilePicker() {
-    fileInputRef.current?.click();
+  async function submitEdit(instruction: string) {
+    if (!activeDocumentId) {
+      throw new Error('Pick a file first.');
+    }
+
+    const response = await fetch('/api/edits/propose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        document_id: activeDocumentId,
+        instruction,
+        requested_model: selectedModel === 'auto' ? null : selectedModel,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const payload = (await response.json()) as EditResponse;
+    setPendingEdit(payload);
+
+    const assistantTurn: ChatTurn = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      mode: 'edit',
+      message: `Edit proposal ready. Review diff in center and choose Accept or Reject.\nCommand: ${payload.proposal.command_id}${payload.model_used ? `\nModel: ${payload.model_used}${payload.fallback_used ? ' (fallback)' : ''}` : ''}${payload.model_selection_reason ? `\nWhy: ${payload.model_selection_reason}` : ''}`,
+    };
+    setChatTurns((current) => [assistantTurn, ...current]);
   }
 
-  function openFolderPicker() {
-    folderInputRef.current?.click();
+  async function resolveEdit(action: 'apply' | 'reject') {
+    if (!pendingEdit) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`/api/edits/${pendingEdit.proposal.command_id}/${action}`, { method: 'POST' });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const payload = (await response.json()) as EditResponse;
+      setPendingEdit(payload);
+
+      if (action === 'apply') {
+        await loadDocumentContent(payload.proposal.document_id);
+      }
+
+      const assistantTurn: ChatTurn = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        mode: 'edit',
+        message: action === 'apply' ? 'Edit applied. You can now download the edited file.' : 'Edit rejected.',
+      };
+      setChatTurns((current) => [assistantTurn, ...current]);
+    } catch (error) {
+      const assistantTurn: ChatTurn = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        mode: 'edit',
+        message: error instanceof Error ? error.message : 'Failed to resolve proposal.',
+      };
+      setChatTurns((current) => [assistantTurn, ...current]);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
-  function handleDrop(event: React.DragEvent<HTMLElement>) {
-    event.preventDefault();
-    setDragActive(false);
-    void handleFiles(event.dataTransfer.files);
+  function downloadActiveDocument() {
+    if (!activeDocumentId) {
+      return;
+    }
+    window.open(`/api/documents/${activeDocumentId}/download`, '_blank');
   }
 
-  function handleDragOver(event: React.DragEvent<HTMLElement>) {
-    event.preventDefault();
-    setDragActive(true);
-  }
-
-  function handleDragLeave(event: React.DragEvent<HTMLElement>) {
-    event.preventDefault();
-    setDragActive(false);
+  function clearPendingDiff() {
+    setPendingEdit(null);
   }
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brandMark">D</div>
+    <div className="copilotShell">
+      <aside className="pane leftPane">
+        <div className="paneTitle">Workspace</div>
+        <button type="button" className="paneButton" onClick={() => fileInputRef.current?.click()} disabled={uploadState === 'uploading'}>
+          {uploadState === 'uploading' ? 'Uploading...' : 'Upload Documents'}
+        </button>
+        <input
+          ref={fileInputRef}
+          className="hiddenInput"
+          type="file"
+          multiple
+          accept=".pdf,.docx,.pptx,.md,.txt"
+          onChange={(event) => {
+            void handleFileUpload(event.target.files);
+            event.target.value = '';
+          }}
+        />
+        {notice ? <p className="noticeLine">{notice}</p> : null}
+
+        <div className="fileList">
+          {sortedDocuments.map((record) => {
+            const isActive = record.document.id === activeDocumentId;
+            return (
+              <button
+                key={record.document.id}
+                type="button"
+                className={`fileItem ${isActive ? 'active' : ''}`}
+                onClick={() => setActiveDocumentId(record.document.id)}
+              >
+                <strong>{record.document.filename}</strong>
+                <small>{record.document.document_type} · {record.chunk_count} chunks</small>
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+
+      <section className="pane centerPane">
+        <div className="centerHeader">
           <div>
-            <h1>DocPilot</h1>
-            <p>Document intelligence workspace</p>
+            <h2>{activeFilename || 'No file selected'}</h2>
+            <small>{activeDocumentType || 'Select a file to view full content'}</small>
+          </div>
+          <div className="centerActions">
+            <button type="button" className="paneButton" onClick={() => void loadDocumentContent(activeDocumentId)} disabled={!activeDocumentId}>
+              Refresh View
+            </button>
+            <button type="button" className="paneButton" onClick={downloadActiveDocument} disabled={!activeDocumentId}>
+              Download Edited File
+            </button>
           </div>
         </div>
 
-        <section className="panel uploadPanel">
-          <h2>Upload</h2>
-          <div
-            className={`uploadBox ${dragActive ? 'dragActive' : ''}`}
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                openFilePicker();
-              }
-            }}
-          >
-            <strong>Drop files here</strong>
-            <span>PDF, DOCX, PPTX, or MD will be parsed and chunked</span>
-            <div className="uploadActions">
-              <button type="button" onClick={openFilePicker} disabled={uploadState === 'uploading'}>
-                Choose files
-              </button>
-              <button type="button" onClick={openFolderPicker} disabled={uploadState === 'uploading'}>
-                Choose folder
-              </button>
-            </div>
+        {centerDiff.length > 0 && pendingEdit?.status === 'pending' ? (
+          <div className="diffBanner">
+            <span>Pending diff preview</span>
+            <button type="button" onClick={clearPendingDiff}>Hide Diff</button>
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept=".pdf,.docx,.pptx,.md,.txt"
-            className="hiddenInput"
-            onChange={(event) => {
-              const files = event.target.files;
-              if (files && files.length > 0) {
-                void handleFiles(files);
-              }
-              event.target.value = '';
-            }}
-          />
-          <input
-            ref={folderInputRef}
-            type="file"
-            multiple
-            accept=".pdf,.docx,.pptx,.md,.txt"
-            className="hiddenInput"
-            {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement> & {
-              webkitdirectory?: string;
-              directory?: string;
-            })}
-            onChange={(event) => {
-              const files = event.target.files;
-              if (files && files.length > 0) {
-                void handleFiles(files);
-              }
-              event.target.value = '';
-            }}
-          />
-          {notice ? <p className={`notice ${notice.kind}`}>{notice.message}</p> : null}
-        </section>
+        ) : null}
 
-        <section className="panel">
-          <div className="panelHeader compact">
-            <h2>Documents</h2>
-            <button type="button" className="textButton" onClick={() => void loadDocuments()}>
-              {refreshing ? 'Refreshing...' : 'Refresh'}
-            </button>
-          </div>
-          <div className="documentList">
-            {sortedDocuments.length === 0 ? (
-              <div className="emptyState">
-                <strong>No documents yet</strong>
-                <span>Upload a file or folder to start indexing.</span>
-              </div>
-            ) : (
-              sortedDocuments.map((record) => (
-                <article className="documentCard" key={record.document.id}>
-                  <div>
-                    <strong>{record.document.filename}</strong>
-                    <span>
-                      {record.chunk_count} chunks • {formatDocumentType(record.document.document_type)}
-                    </span>
+        <div className="fileViewport">
+          {centerDiff.length > 0 && pendingEdit?.status === 'pending' ? (
+            <pre className="fileContent">
+              {centerDiff.map((line, index) => {
+                const klass = line.kind === 'insert' ? 'lineAdd' : line.kind === 'delete' ? 'lineDelete' : 'lineEqual';
+                const prefix = line.kind === 'insert' ? '+' : line.kind === 'delete' ? '-' : ' ';
+                return (
+                  <div key={`${line.kind}-${index}`} className={klass}>
+                    {prefix} {line.content}
                   </div>
-                  <div className="documentCardActions">
-                    <em>{record.chunk_count > 0 ? 'Indexed' : 'Queued'}</em>
-                    <button
-                      type="button"
-                      className="dangerButton"
-                      onClick={() => void deleteDocument(record.document.id, record.document.filename)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
+                );
+              })}
+            </pre>
+          ) : (
+            <pre className="fileContent">{activeContent || 'No content to display.'}</pre>
+          )}
+        </div>
+      </section>
+
+      <aside className="pane rightPane">
+        <div className="paneTitle">Copilot Chat</div>
+
+        <div className="modeSwitch">
+          <button type="button" className={mode === 'qa' ? 'active' : ''} onClick={() => setMode('qa')}>Q&A</button>
+          <button type="button" className={mode === 'edit' ? 'active' : ''} onClick={() => setMode('edit')}>Edit</button>
+        </div>
+
+        <label className="fieldLabel" htmlFor="modelChoice">Model</label>
+        <select id="modelChoice" value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+          <option value="auto">Auto (dynamic choice)</option>
+          {availableModels.map((model) => (
+            <option key={model} value={model}>{model}</option>
+          ))}
+        </select>
+        <small className="noticeLine">
+          {selectedModel === 'auto'
+            ? 'Auto lets DocPilot pick the best model per task and context size.'
+            : 'Manual mode pins this model for the next request.'}
+        </small>
+
+        {mode === 'qa' ? (
+          <label className="toggleLine">
+            <input
+              type="checkbox"
+              checked={useActiveOnlyForQa}
+              onChange={(event) => setUseActiveOnlyForQa(event.target.checked)}
+            />
+            Scope Q&A to active center file
+          </label>
+        ) : null}
+
+        {mode === 'edit' && pendingEdit?.status === 'pending' ? (
+          <div className="resolveActions">
+            <button type="button" onClick={() => void resolveEdit('apply')} disabled={isSubmitting}>Accept</button>
+            <button type="button" className="danger" onClick={() => void resolveEdit('reject')} disabled={isSubmitting}>Reject</button>
           </div>
-        </section>
+        ) : null}
+
+        <form className="chatForm" onSubmit={submitChat}>
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            placeholder={mode === 'qa' ? 'Ask about your docs...' : 'Describe the edit you want applied to the active file...'}
+            rows={4}
+          />
+          <button type="submit" disabled={isSubmitting || !chatInput.trim()}>
+            {isSubmitting ? 'Working...' : mode === 'qa' ? 'Ask' : 'Propose Edit'}
+          </button>
+        </form>
+
+        <div className="chatHistory">
+          {chatTurns.map((turn) => (
+            <article key={turn.id} className={`chatTurn ${turn.role}`}>
+              <strong>{turn.role === 'user' ? `You · ${turn.mode.toUpperCase()}` : `DocPilot · ${turn.mode.toUpperCase()}`}</strong>
+              <p>{turn.message}</p>
+            </article>
+          ))}
+        </div>
       </aside>
-
-      <main className="workspace">
-        <header className="hero">
-          <div>
-            <p className="eyebrow">Copilot-inspired multi-model workflow</p>
-            <h2>Ask questions, edit safely, and trace every answer back to source.</h2>
-          </div>
-          <div className="healthCard">
-            <span>Backend</span>
-            <strong>{health ? `${health.service} • ${health.status}` : 'Disconnected'}</strong>
-            <small>{health ? `${health.version} • ${health.environment}` : 'Waiting for API'}</small>
-          </div>
-        </header>
-
-        <section className="grid">
-          <article className="panel transcriptPanel">
-            <div className="panelHeader">
-              <h3>Q&A</h3>
-              <span>Grounded responses with page citations</span>
-            </div>
-            <form className="qaForm" onSubmit={askQuestion}>
-              <label htmlFor="questionInput">Question</label>
-              <textarea
-                id="questionInput"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Ask a grounded question about your uploaded documents"
-                rows={3}
-              />
-
-              <div className="qaControlsRow">
-                <label className="fieldInline" htmlFor="maxChunks">
-                  Citations to retrieve
-                  <input
-                    id="maxChunks"
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={maxChunks}
-                    onChange={(event) => setMaxChunks(Math.max(1, Math.min(10, Number(event.target.value) || 3)))}
-                  />
-                </label>
-                <label className="fieldInline" htmlFor="modelSelect">
-                  Model
-                  <select
-                    id="modelSelect"
-                    value={selectedModel}
-                    onChange={(event) => setSelectedModel(event.target.value)}
-                  >
-                    {availableModels.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="submit" disabled={isAsking}>
-                  {isAsking ? 'Asking...' : 'Ask'}
-                </button>
-              </div>
-
-              <div className="docFilters">
-                <span>Scope</span>
-                {sortedDocuments.length === 0 ? (
-                  <small>No uploaded documents yet</small>
-                ) : (
-                  <div className="chipRow">
-                    {sortedDocuments.map((record) => {
-                      const checked = selectedDocumentIds.includes(record.document.id);
-                      return (
-                        <label key={record.document.id} className={`chip ${checked ? 'active' : ''}`}>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleDocumentFilter(record.document.id)}
-                          />
-                          {record.document.filename}
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-                <small>
-                  {selectedDocumentIds.length === 0
-                    ? 'Using all documents'
-                    : `Using ${selectedDocumentIds.length} selected document${selectedDocumentIds.length > 1 ? 's' : ''}`}
-                </small>
-              </div>
-            </form>
-
-            <div className="transcript">
-              {qaHistory.length === 0 ? (
-                <div className="emptyState">
-                  <strong>No questions yet</strong>
-                  <span>Ask a question to see grounded answers and citations.</span>
-                </div>
-              ) : (
-                qaHistory.map((turn) => (
-                  <div className="qaTurn" key={turn.id}>
-                    <div className="bubble user">{turn.query}</div>
-                    <div className="bubble assistant">
-                      <p>{turn.response.answer}</p>
-                      <div className="modelMetadata">
-                        <small>Model: {turn.response.model_used}</small>
-                        {turn.response.fallback_used && <span className="fallbackBadge">Fallback</span>}
-                      </div>
-                    </div>
-                    <div className="citationList">
-                      {turn.response.citations.length === 0 ? (
-                        <span className="citationEmpty">No citations returned for this answer.</span>
-                      ) : (
-                        turn.response.citations.map((citation, index) => (
-                          <article className="citationCard" key={`${turn.id}-${citation.document_id}-${index}`}>
-                            <strong>
-                              {citation.source_label || 'Source'} •{' '}
-                              {documentNameById.get(citation.document_id) || citation.document_id}
-                            </strong>
-                            <span>
-                              page {citation.page_number ?? 'n/a'} • paragraph {citation.paragraph_index ?? 'n/a'}
-                            </span>
-                            <p>{citation.quote || 'No quote provided.'}</p>
-                          </article>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
-
-          <article className="panel transcriptPanel">
-            <div className="panelHeader">
-              <h3>Editing</h3>
-              <span>Command + Memento with reversible diffs</span>
-            </div>
-            <div className="diffPreview">
-              <div className="diffLine remove">- Replace generic claims with grounded wording</div>
-              <div className="diffLine add">+ Replace generic claims with exact cited language</div>
-              <div className="diffLine keep">  Keep the original document untouched until accept</div>
-            </div>
-          </article>
-        </section>
-      </main>
     </div>
   );
 }

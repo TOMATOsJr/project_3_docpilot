@@ -28,6 +28,13 @@ class InMemoryTestRepository(DocumentRepository):
         metadata, _raw_text, chunks = record
         return metadata, chunks
 
+    def get_document_text(self, document_id: UUID) -> Optional[tuple[DocumentMetadata, str]]:
+        record = self._docs.get(document_id)
+        if record is None:
+            return None
+        metadata, raw_text, _chunks = record
+        return metadata, raw_text
+
     def list_documents(self) -> list[DocumentMetadata]:
         return [record[0] for record in self._docs.values()]
 
@@ -37,6 +44,13 @@ class InMemoryTestRepository(DocumentRepository):
     def get_chunks_by_document(self, document_id: UUID) -> list[Chunk]:
         record = self._docs.get(document_id)
         return [] if record is None else record[2]
+
+    def replace_document_content(self, document_id: UUID, raw_text: str, chunks: list[Chunk]) -> None:
+        record = self._docs.get(document_id)
+        if record is None:
+            return
+        metadata, _existing_text, _existing_chunks = record
+        self._docs[document_id] = (metadata, raw_text, chunks)
 
     def save_chunk_embedding(self, chunk_id: UUID, embedding: list[float]) -> None:
         return

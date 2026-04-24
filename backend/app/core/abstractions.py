@@ -158,6 +158,11 @@ class DocumentRepository(ABC):
         pass
 
     @abstractmethod
+    def get_document_text(self, document_id: UUID) -> Optional[tuple[DocumentMetadata, str]]:
+        """Retrieve document metadata and raw text by ID."""
+        pass
+
+    @abstractmethod
     def list_documents(self) -> list[DocumentMetadata]:
         """List all document metadata."""
         pass
@@ -170,6 +175,11 @@ class DocumentRepository(ABC):
     @abstractmethod
     def get_chunks_by_document(self, document_id: UUID) -> list[Chunk]:
         """Retrieve all chunks for a document."""
+        pass
+
+    @abstractmethod
+    def replace_document_content(self, document_id: UUID, raw_text: str, chunks: list[Chunk]) -> None:
+        """Replace document raw text and chunk set atomically."""
         pass
 
     @abstractmethod

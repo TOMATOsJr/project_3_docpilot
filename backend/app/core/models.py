@@ -77,6 +77,7 @@ class QueryResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     retrieved_chunks: list[Chunk] = Field(default_factory=list)
     model_used: str
+    model_selection_reason: str | None = None
     requested_model: str | None = None
     fallback_used: bool = False
 
@@ -85,6 +86,7 @@ class EditRequest(BaseModel):
     document_id: UUID
     instruction: str
     selected_text: str | None = None
+    requested_model: str | None = None
 
 
 class DiffLine(BaseModel):
@@ -103,12 +105,21 @@ class EditProposal(BaseModel):
 
 class EditResponse(BaseModel):
     proposal: EditProposal
+    model_used: str | None = None
+    model_selection_reason: str | None = None
+    fallback_used: bool = False
     status: Literal["pending", "applied", "rejected"] = "pending"
+
+
+class EditResolutionResponse(BaseModel):
+    proposal: EditProposal
+    status: Literal["applied", "rejected"]
 
 
 class SynthesisRequest(BaseModel):
     query: str
     document_ids: list[UUID] = Field(default_factory=list)
+    requested_model: str | None = None
 
 
 class SynthesisResponse(BaseModel):

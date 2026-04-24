@@ -43,4 +43,4 @@ def get_rag_engine() -> RagEngine:
 
 @lru_cache(maxsize=1)
 def get_orchestrator() -> AgentOrchestrator:
-    return AgentOrchestrator(get_rag_engine(), get_model_gateway())
+    return AgentOrchestrator(get_rag_engine(), get_model_gateway(), get_repository())

@@ -151,6 +151,24 @@ class PostgresRepository(DocumentRepository):
         finally:
             session.close()
 
+    def get_document_text(self, document_id: UUID) -> Optional[tuple[DocumentMetadata, str]]:
+        """Retrieve document metadata and raw text."""
+        session = self._get_session()
+        try:
+            doc_record = session.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+            if not doc_record:
+                return None
+
+            metadata = DocumentMetadata(
+                id=doc_record.id,
+                filename=doc_record.filename,
+                document_type=doc_record.document_type,
+                page_count=doc_record.page_count,
+            )
+            return metadata, doc_record.raw_text
+        finally:
+            session.close()
+
     def list_documents(self) -> list[DocumentMetadata]:
         """List all documents."""
         session = self._get_session()
@@ -194,6 +212,40 @@ class PostgresRepository(DocumentRepository):
         finally:
             session.close()
 
+    def replace_document_content(self, document_id: UUID, raw_text: str, chunks: list[Chunk]) -> None:
+        """Replace raw text and chunk rows for an existing document."""
+        session = self._get_session()
+        try:
+            doc_record = session.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+            if doc_record is None:
+                raise ValueError(f"Document not found: {document_id}")
+
+            doc_record.raw_text = raw_text
+            doc_record.page_count = max((chunk.metadata.page_number or 1) for chunk in chunks) if chunks else 1
+
+            session.query(ChunkRecord).filter(ChunkRecord.document_id == document_id).delete()
+            for chunk in chunks:
+                chunk_record = ChunkRecord(
+                    id=chunk.id,
+                    document_id=document_id,
+                    chunk_index=chunk.metadata.paragraph_index or 0,
+                    offset=0,
+                    length=len(chunk.text),
+                    page_num=chunk.metadata.page_number or 0,
+                    section_name=chunk.metadata.source_label,
+                    text=chunk.text,
+                )
+                session.add(chunk_record)
+
+            session.commit()
+            logger.info(f"Replaced content for document {document_id} with {len(chunks)} chunks")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to replace document content: {e}")
+            raise
+        finally:
+            session.close()
+
     def save_chunk_embedding(self, chunk_id: UUID, embedding: list[float]) -> None:
         """Store vector embedding for a chunk."""
         session = self._get_session()
@@ -217,7 +269,7 @@ class PostgresRepository(DocumentRepository):
         Computes cosine similarity in memory.
         """
         import math
-        
+
         def cosine_similarity(v1: list[float], v2: list[float]) -> float:
             if not v1 or not v2:
                 return 0.0
@@ -233,17 +285,17 @@ class PostgresRepository(DocumentRepository):
             query = session.query(ChunkRecord)
             if document_ids:
                 query = query.filter(ChunkRecord.document_id.in_(document_ids))
-                
+
             chunk_records = query.all()
             scored_chunks = []
-            
+
             for cr in chunk_records:
                 stored = self._chunk_record_to_stored_chunk(cr)
                 if stored.embedding:
                     score = cosine_similarity(query_embedding, stored.embedding)
                     if score > 0.65:  # Strict filter
                         scored_chunks.append((stored, score))
-                        
+
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
             return [chunk for chunk, score in scored_chunks][:top_k]
         finally:
