@@ -24,6 +24,7 @@ class ModelGateway:
         anthropic_api_key: str | None = None,
         openai_api_key: str | None = None,
         gemini_api_key: str | None = None,
+        groq_api_key: str | None = None,
     ) -> None:
         self.primary_model = primary_model
         self.fallback_model = fallback_model
@@ -38,6 +39,8 @@ class ModelGateway:
             os.environ["GEMINI_API_KEY"] = gemini_api_key
             # Some Google SDK paths use GOOGLE_API_KEY.
             os.environ.setdefault("GOOGLE_API_KEY", gemini_api_key)
+        if groq_api_key:
+            os.environ["GROQ_API_KEY"] = groq_api_key
 
     def route(self, task_type: str) -> ModelRoute:
         if task_type in {"qa", "edit"}:

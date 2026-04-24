@@ -13,11 +13,12 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["http://localhost:5173"]
 
     database_url: str = "postgresql+psycopg://docpilot:docpilot@localhost:5432/docpilot"
-    primary_model: str = "gemini/gemini-2.0-flash"
+    primary_model: str = "gemini/gemini-2.5-flash-lite"
     fallback_model: str = "gemini/gemini-1.5-pro-latest"
     allowed_models: list[str] = [
-        "gemini/gemini-2.0-flash",
+        "gemini/gemini-2.5-flash-lite",
         "gemini/gemini-1.5-pro-latest",
+        "groq/llama-3.1-8b-instant",
         "claude-sonnet-4-20250514",
         "gpt-4o-mini",
     ]
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, validation_alias="GEMINI_API_KEY")
+    groq_api_key: str | None = Field(default=None, validation_alias="GROQ_API_KEY")
 
 
 @lru_cache(maxsize=1)

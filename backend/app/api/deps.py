@@ -31,6 +31,7 @@ def get_model_gateway() -> ModelGateway:
         anthropic_api_key=settings.anthropic_api_key,
         openai_api_key=settings.openai_api_key,
         gemini_api_key=settings.gemini_api_key,
+        groq_api_key=settings.groq_api_key,
     )
 
 
