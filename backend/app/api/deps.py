@@ -24,13 +24,20 @@ def get_ingest_service() -> IngestService:
 @lru_cache(maxsize=1)
 def get_model_gateway() -> ModelGateway:
     settings = get_settings()
-    return ModelGateway(primary_model=settings.primary_model, fallback_model=settings.fallback_model)
+    return ModelGateway(
+        primary_model=settings.primary_model,
+        fallback_model=settings.fallback_model,
+        allowed_models=settings.allowed_models,
+        anthropic_api_key=settings.anthropic_api_key,
+        openai_api_key=settings.openai_api_key,
+        gemini_api_key=settings.gemini_api_key,
+    )
 
 
 @lru_cache(maxsize=1)
 def get_rag_engine() -> RagEngine:
-    """Get RAG engine using PostgreSQL repository."""
-    return RagEngine(repository=get_repository())
+    """Get RAG engine using PostgreSQL repository and ModelGateway."""
+    return RagEngine(repository=get_repository(), model_gateway=get_model_gateway())
 
 
 @lru_cache(maxsize=1)

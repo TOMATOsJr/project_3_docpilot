@@ -39,6 +39,8 @@ type QueryResponse = {
   citations: Citation[];
   retrieved_chunks: Array<{ id: string; text: string }>;
   model_used: string;
+  requested_model: string | null;
+  fallback_used: boolean;
 };
 
 type QaTurn = {
@@ -63,6 +65,8 @@ export default function App() {
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [qaHistory, setQaHistory] = useState<QaTurn[]>([]);
   const [isAsking, setIsAsking] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -98,6 +102,23 @@ export default function App() {
     }
   }
 
+  async function loadAvailableModels() {
+    try {
+      const response = await fetch('/api/qa/models');
+      if (!response.ok) {
+        throw new Error('Failed to load models');
+      }
+      const data = (await response.json()) as { available_models: string[] };
+      setAvailableModels(data.available_models);
+      // Set first model as default
+      if (data.available_models.length > 0 && !selectedModel) {
+        setSelectedModel(data.available_models[0]);
+      }
+    } catch (error) {
+      console.error('Could not load available models:', error);
+    }
+  }
+
   async function loadDocuments() {
     setRefreshing(true);
     try {
@@ -118,6 +139,7 @@ export default function App() {
   useEffect(() => {
     void loadHealth();
     void loadDocuments();
+    void loadAvailableModels();
   }, []);
 
   async function uploadFile(file: File) {
@@ -208,6 +230,13 @@ export default function App() {
 
     setIsAsking(true);
     try {
+      // Map qaHistory to ConversationTurn format
+      const conversationHistory = qaHistory.map((turn) => ({
+        query: turn.query,
+        model_used: turn.response.model_used,
+        answer: turn.response.answer,
+      }));
+
       const response = await fetch('/api/qa', {
         method: 'POST',
         headers: {
@@ -217,6 +246,8 @@ export default function App() {
           query: trimmedQuery,
           document_ids: selectedDocumentIds,
           max_chunks: maxChunks,
+          requested_model: selectedModel || null,
+          conversation_history: conversationHistory,
         }),
       });
 
@@ -423,6 +454,20 @@ export default function App() {
                     onChange={(event) => setMaxChunks(Math.max(1, Math.min(10, Number(event.target.value) || 3)))}
                   />
                 </label>
+                <label className="fieldInline" htmlFor="modelSelect">
+                  Model
+                  <select
+                    id="modelSelect"
+                    value={selectedModel}
+                    onChange={(event) => setSelectedModel(event.target.value)}
+                  >
+                    {availableModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button type="submit" disabled={isAsking}>
                   {isAsking ? 'Asking...' : 'Ask'}
                 </button>
@@ -469,7 +514,10 @@ export default function App() {
                     <div className="bubble user">{turn.query}</div>
                     <div className="bubble assistant">
                       <p>{turn.response.answer}</p>
-                      <small>Model: {turn.response.model_used}</small>
+                      <div className="modelMetadata">
+                        <small>Model: {turn.response.model_used}</small>
+                        {turn.response.fallback_used && <span className="fallbackBadge">Fallback</span>}
+                      </div>
                     </div>
                     <div className="citationList">
                       {turn.response.citations.length === 0 ? (

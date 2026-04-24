@@ -57,10 +57,19 @@ class UploadResponse(BaseModel):
     chunk_count: int
 
 
+class ConversationTurn(BaseModel):
+    """Single turn in conversation history."""
+    query: str
+    model_used: str
+    answer: str
+
+
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1)
     document_ids: list[UUID] = Field(default_factory=list)
     max_chunks: int = 3
+    requested_model: str | None = None
+    conversation_history: list[ConversationTurn] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -68,6 +77,8 @@ class QueryResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     retrieved_chunks: list[Chunk] = Field(default_factory=list)
     model_used: str
+    requested_model: str | None = None
+    fallback_used: bool = False
 
 
 class EditRequest(BaseModel):
