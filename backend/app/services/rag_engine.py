@@ -17,11 +17,23 @@ class RagEngine:
 
     def answer(self, request: QueryRequest) -> QueryResponse:
         """Answer a query using retrieval-augmented generation."""
-        retrieved_chunks = self._retrieve_chunks(
+        # Ensure we request enough chunks to potentially fill the context window, instead of strict top_k
+        raw_chunks = self._retrieve_chunks(
             request.query,
             document_ids=request.document_ids,
-            top_k=request.max_chunks,
+            top_k=100,
         )
+        
+        # Determine model
+        model = request.requested_model
+        if not model and self._model_gateway:
+            model = self._model_gateway.primary_model
+            
+        # Apply budget allocation (100% chunks first, then history if space remains)
+        retrieved_chunks, filtered_history = self._apply_context_budget(
+            request.query, raw_chunks, request.conversation_history, model or "gemini/gemini-2.5-flash-lite"
+        )
+        
         citations = [
             Citation(
                 document_id=chunk.metadata.document_id,
@@ -33,8 +45,8 @@ class RagEngine:
             for chunk in retrieved_chunks
         ]
 
-        # If no evidence is retrieved, return a grounded failure instead of hallucinating.
-        if not retrieved_chunks:
+        # If no evidence is retrieved and no history is present, return a grounded failure instead of hallucinating.
+        if not retrieved_chunks and not request.conversation_history:
             answer = f"I could not find grounded evidence for: {request.query}"
             model_used = "keyword-retrieval"
             fallback_used = False
@@ -52,7 +64,7 @@ class RagEngine:
             grounded_prompt = self._build_grounded_prompt(
                 query=request.query,
                 chunks=retrieved_chunks,
-                conversation_history=request.conversation_history,
+                conversation_history=filtered_history,
             )
             answer, model_used, fallback_used = self._model_gateway.complete(
                 grounded_prompt,
@@ -63,7 +75,7 @@ class RagEngine:
             answer = self._compose_answer(
                 request.query,
                 retrieved_chunks,
-                conversation_history=request.conversation_history,
+                conversation_history=filtered_history,
             )
             model_used = "keyword-retrieval"
             fallback_used = False
@@ -91,47 +103,110 @@ class RagEngine:
             turns = [f"User: {turn.query}\nAssistant: {turn.answer}" for turn in conversation_history]
             history_block = "\n\nConversation History:\n" + "\n".join(turns)
 
+        evidence_section = "Evidence Snippets:\n" + "\n".join(evidence_lines) if chunks else "Evidence Snippets:\n[No reference present. You may answer from the Conversation History.]"
+
         return (
-            "You are a grounded assistant. Answer only using the provided evidence snippets. "
+            "You are a grounded assistant. Answer only using the provided evidence snippets and the conversation history. "
             "If evidence is insufficient, say that clearly. Do not invent facts.\n\n"
             f"User Question:\n{query}\n"
             f"{history_block}\n\n"
-            "Evidence Snippets:\n"
-            + "\n".join(evidence_lines)
+            f"{evidence_section}"
         )
 
     def _retrieve_chunks(
         self,
         query: str,
         document_ids: Optional[list[UUID]] = None,
-        top_k: int = 5,
+        top_k: int = 100,
     ) -> list[Chunk]:
-        """Retrieve chunks matching query using keyword search."""
-        query_terms = [term.lower() for term in query.split() if len(term) > 2]
+        """Retrieve chunks matching query using semantic search (cosine similarity > 0.6)."""
+        import litellm
+        from app.config import get_settings
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        settings = get_settings()
+        
+        try:
+            response = litellm.embedding(model=settings.embedding_model, input=[query])
+            query_embedding = response.data[0]['embedding']
+        except Exception as e:
+            logger.error(f"Failed to generate query embedding: {e}")
+            return []
+            
+        stored_chunks = self._repository.search_chunks_by_embedding(
+            query_embedding, top_k=top_k, document_ids=document_ids
+        )
+        
+        return [
+            Chunk(
+                id=sc.id,
+                text=sc.text,
+                metadata=sc.metadata,
+            ) for sc in stored_chunks
+        ]
 
-        # Search by keyword for each document (or all if none specified)
-        results = []
-        if document_ids:
-            for doc_id in document_ids:
-                chunks = self._repository.get_chunks_by_document(doc_id)
-                results.extend(chunks)
-        else:
-            # Get all documents and their chunks
-            all_docs = self._repository.list_documents()
-            for doc in all_docs:
-                chunks = self._repository.get_chunks_by_document(doc.id)
-                results.extend(chunks)
-
-        # Score and sort chunks
-        scored_chunks = [(chunk, self._score_chunk(chunk.text, query_terms)) for chunk in results]
-        scored_chunks.sort(key=lambda x: x[1], reverse=True)
-
-        return [chunk for chunk, score in scored_chunks if score > 0][:top_k]
-
-    def _score_chunk(self, text: str, query_terms: list[str]) -> int:
-        """Score a chunk by keyword overlap."""
-        lowered = text.lower()
-        return sum(1 for term in query_terms if term in lowered)
+    def _apply_context_budget(
+        self, 
+        query: str, 
+        chunks: list[Chunk], 
+        conversation_history: list, 
+        model: str
+    ) -> tuple[list[Chunk], list]:
+        """
+        Fits chunks and history into 90% of the model's context window.
+        Priority: Base Prompt -> All possible Chunks -> Leftover space for History.
+        """
+        import litellm
+        
+        try:
+            # Fallback for models without explicit config
+            max_tokens = litellm.get_max_tokens(model)
+            print("max tokens:",max_tokens)
+        except Exception:
+            print("Error getting max tokens from litellm, using default value of 8192")
+            max_tokens = 8192
+            
+        budget = int(0.9 * max_tokens)
+        
+        base_prompt = "You are a grounded assistant. Answer only using the provided evidence snippets and the conversation history. If evidence is insufficient, say that clearly. Do not invent facts.\n\nUser Question:\n\n\nEvidence Snippets:\n"
+        
+        try:
+            used_tokens = litellm.token_counter(model=model, text=base_prompt + query)
+        except Exception:
+            used_tokens = len(base_prompt + query) // 4
+            
+        remaining_budget = budget - used_tokens
+        
+        selected_chunks = []
+        for chunk in chunks:
+            chunk_text = f"[X] source={chunk.metadata.source_label}; page={chunk.metadata.page_number}; paragraph={chunk.metadata.paragraph_index}; text={chunk.text}\n"
+            try:
+                chunk_tokens = litellm.token_counter(model=model, text=chunk_text)
+            except Exception:
+                chunk_tokens = len(chunk_text) // 4
+                
+            if remaining_budget - chunk_tokens > 0:
+                selected_chunks.append(chunk)
+                remaining_budget -= chunk_tokens
+            else:
+                break
+                
+        selected_history = []
+        for turn in reversed(conversation_history):
+            turn_text = f"User: {turn.query}\nAssistant: {turn.answer}\n"
+            try:
+                turn_tokens = litellm.token_counter(model=model, text=turn_text)
+            except Exception:
+                turn_tokens = len(turn_text) // 4
+                
+            if remaining_budget - turn_tokens > 0:
+                selected_history.insert(0, turn)
+                remaining_budget -= turn_tokens
+            else:
+                break
+                
+        return selected_chunks, selected_history
 
     def _compose_answer(self, query: str, chunks: list[Chunk], conversation_history: list | None = None) -> str:
         """Compose a grounded answer from retrieved chunks and conversation history."""

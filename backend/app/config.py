@@ -23,6 +23,8 @@ class Settings(BaseSettings):
         "gpt-4o-mini",
     ]
 
+    embedding_model: str = "gemini/gemini-embedding-2"
+
     # LLM provider keys (loaded from environment/.env)
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")

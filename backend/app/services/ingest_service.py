@@ -91,6 +91,9 @@ class IngestService:
         doc_id = self.repository.save_document(metadata, text, chunks)
         logger.info(f"Stored document {doc_id} with {len(chunks)} chunks")
 
+        # Step 6: Generate and save embeddings
+        self._embed_and_save_chunks(chunks)
+
         return doc_id
 
     def ingest_from_sections(
@@ -147,4 +150,30 @@ class IngestService:
         doc_id = self.repository.save_document(metadata, "\n".join(s["text"] for s in sections), all_chunks)
         logger.info(f"Stored document {doc_id} with {len(all_chunks)} chunks from {len(sections)} sections")
 
+        # Generate and save embeddings
+        self._embed_and_save_chunks(all_chunks)
+
         return doc_id
+
+    def _embed_and_save_chunks(self, chunks: list[Chunk]) -> None:
+        """Helper to generate and save embeddings for a list of chunks."""
+        if not chunks:
+            return
+            
+        from app.config import get_settings
+        import litellm
+        
+        settings = get_settings()
+        
+        try:
+            # Generate embeddings for all chunks in a single batch (or multiple if large, but litellm handles reasonable lists)
+            inputs = [chunk.text for chunk in chunks]
+            response = litellm.embedding(model=settings.embedding_model, input=inputs)
+            
+            for i, chunk in enumerate(chunks):
+                if i < len(response.data):
+                    embedding = response.data[i]['embedding']
+                    self.repository.save_chunk_embedding(chunk.id, embedding)
+            logger.info(f"Successfully generated embeddings for {len(chunks)} chunks")
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {e}")

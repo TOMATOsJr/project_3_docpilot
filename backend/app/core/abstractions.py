@@ -178,7 +178,7 @@ class DocumentRepository(ABC):
         pass
 
     @abstractmethod
-    def search_chunks_by_embedding(self, query_embedding: list[float], top_k: int = 5) -> list[StoredChunk]:
+    def search_chunks_by_embedding(self, query_embedding: list[float], top_k: int = 5, document_ids: Optional[list[UUID]] = None) -> list[StoredChunk]:
         """Retrieve top-k chunks by vector similarity."""
         pass
 

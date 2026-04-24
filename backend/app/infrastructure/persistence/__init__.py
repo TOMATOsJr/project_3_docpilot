@@ -211,16 +211,41 @@ class PostgresRepository(DocumentRepository):
         finally:
             session.close()
 
-    def search_chunks_by_embedding(self, query_embedding: list[float], top_k: int = 5) -> list[StoredChunk]:
+    def search_chunks_by_embedding(self, query_embedding: list[float], top_k: int = 5, document_ids: Optional[list[UUID]] = None) -> list[StoredChunk]:
         """
         Retrieve top-k chunks by vector similarity.
-        Note: Full pgvector implementation requires pgvector extension.
-        For now, this is a placeholder returning all chunks sorted by ID.
+        Computes cosine similarity in memory.
         """
+        import math
+        
+        def cosine_similarity(v1: list[float], v2: list[float]) -> float:
+            if not v1 or not v2:
+                return 0.0
+            dot_product = sum(a * b for a, b in zip(v1, v2))
+            norm1 = math.sqrt(sum(a * a for a in v1))
+            norm2 = math.sqrt(sum(b * b for b in v2))
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot_product / (norm1 * norm2)
+
         session = self._get_session()
         try:
-            chunk_records = session.query(ChunkRecord).limit(top_k).all()
-            return [self._chunk_record_to_stored_chunk(cr) for cr in chunk_records]
+            query = session.query(ChunkRecord)
+            if document_ids:
+                query = query.filter(ChunkRecord.document_id.in_(document_ids))
+                
+            chunk_records = query.all()
+            scored_chunks = []
+            
+            for cr in chunk_records:
+                stored = self._chunk_record_to_stored_chunk(cr)
+                if stored.embedding:
+                    score = cosine_similarity(query_embedding, stored.embedding)
+                    if score > 0.65:  # Strict filter
+                        scored_chunks.append((stored, score))
+                        
+            scored_chunks.sort(key=lambda x: x[1], reverse=True)
+            return [chunk for chunk, score in scored_chunks][:top_k]
         finally:
             session.close()
 
